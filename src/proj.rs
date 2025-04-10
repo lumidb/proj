@@ -848,6 +848,39 @@ impl Proj {
         }
     }
 
+    pub fn convert_3d(&self, point: (f64, f64, f64)) -> Result<(f64, f64, f64), ProjError> {
+        let c_x: c_double = point.0;
+        let c_y: c_double = point.1;
+        let c_z: c_double = point.2;
+        let new_x;
+        let new_y;
+        let new_z;
+        let err;
+
+        // This doesn't seem strictly correct, but if we set PJ_XY or PJ_LP here, the
+        // other two values remain uninitialized and we can't be sure that libproj
+        // doesn't try to read them. proj_trans_generic does the same thing.
+        let xyzt = PJ_XYZT {
+            x: c_x,
+            y: c_y,
+            z: c_z,
+            t: f64::INFINITY,
+        };
+        unsafe {
+            proj_errno_reset(self.c_proj);
+            let trans = proj_trans(self.c_proj, PJ_DIRECTION_PJ_FWD, PJ_COORD { xyzt });
+            new_x = trans.xyz.x;
+            new_y = trans.xyz.y;
+            new_z = trans.xyz.z;
+            err = proj_errno(self.c_proj);
+        }
+        if err == 0 {
+            Ok((new_x, new_y, new_z))
+        } else {
+            Err(ProjError::Conversion(error_message(err)?))
+        }
+    }
+
     /// Convert a mutable slice (or anything that can deref into a mutable slice) of `Coord`s
     ///
     /// The following example converts from NAD83 US Survey Feet (EPSG 2230) to NAD83 Metres (EPSG 26946)
