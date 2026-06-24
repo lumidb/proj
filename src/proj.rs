@@ -5,14 +5,17 @@ use proj_sys::{
     PJ_AREA, PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT,
     PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS,
     PJ_COMPARISON_CRITERION_PJ_COMP_STRICT, PJ_CONTEXT, PJ_COORD, PJ_DIRECTION_PJ_FWD,
-    PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LPZT, PJ_WKT_TYPE_PJ_WKT1_ESRI, PJ_WKT_TYPE_PJ_WKT1_GDAL,
+    PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LPZT, PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
+    PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS,
+    PJ_WKT_TYPE_PJ_WKT1_ESRI, PJ_WKT_TYPE_PJ_WKT1_GDAL,
     PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED, PJ_WKT_TYPE_PJ_WKT2_2019,
     PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts, proj_area_create, proj_area_destroy,
-    proj_area_set_bbox, proj_as_projjson, proj_as_wkt, proj_context_errno,
+    proj_area_set_bbox, proj_as_proj_string, proj_as_projjson, proj_as_wkt, proj_context_errno,
     proj_context_get_url_endpoint, proj_context_is_network_enabled, proj_context_set_search_paths,
     proj_context_set_url_endpoint, proj_coordinate_metadata_create,
     proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
     proj_create_crs_to_crs_from_pj, proj_destroy, proj_errno_string, proj_get_area_of_use,
+    proj_get_type,
     proj_grid_cache_set_enable, proj_info, proj_is_equivalent_to_with_ctx,
     proj_normalize_for_visualization, proj_pj_info, proj_trans, proj_trans_array,
     proj_trans_bounds,
@@ -1075,6 +1078,41 @@ impl Proj {
             Ok((new_x, new_y, new_z))
         } else {
             Err(ProjError::Conversion(error_message(err)?))
+        }
+    }
+
+    /// Export as a legacy proj4 string (`+proj=...`). Call on a CRS object
+    /// (e.g. `Proj::new("EPSG:3857")`), not a `new_known_crs` transformation;
+    /// errors if PROJ has no proj4 representation for the CRS.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn as_proj_string(&self) -> Result<String, ProjError> {
+        unsafe {
+            let s = proj_as_proj_string(
+                self.ctx(),
+                self.c_proj,
+                PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
+                std::ptr::null(),
+            );
+            if s.is_null() {
+                return Err(ProjError::Conversion("no proj4 representation".into()));
+            }
+            Ok(_string(s)?)
+        }
+    }
+
+    /// True when this is a geographic (lat/lon) CRS. Call on a CRS object, not
+    /// a `new_known_crs` transformation.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn is_geographic(&self) -> bool {
+        unsafe {
+            matches!(
+                proj_get_type(self.c_proj),
+                PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS | PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS
+            )
         }
     }
 
