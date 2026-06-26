@@ -14,7 +14,8 @@ use proj_sys::{
     proj_context_get_url_endpoint, proj_context_is_network_enabled, proj_context_set_search_paths,
     proj_context_set_url_endpoint, proj_coordinate_metadata_create,
     proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
-    proj_create_crs_to_crs_from_pj, proj_destroy, proj_errno_string, proj_get_area_of_use,
+    proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system, proj_cs_get_axis_info,
+    proj_destroy, proj_errno_string, proj_get_area_of_use,
     proj_get_type,
     proj_grid_cache_set_enable, proj_info, proj_is_equivalent_to_with_ctx,
     proj_normalize_for_visualization, proj_pj_info, proj_trans, proj_trans_array,
@@ -1113,6 +1114,44 @@ impl Proj {
                 proj_get_type(self.c_proj),
                 PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS | PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS
             )
+        }
+    }
+
+    /// True when this CRS's first axis points north/south (latitude/northing
+    /// first), e.g. EPSG:4326 or EPSG:3879; false for easting/longitude-first
+    /// CRSes and when the axis order can't be determined. Call on a CRS object,
+    /// not a `new_known_crs` transformation.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn axis_order_is_northing_first(&self) -> bool {
+        unsafe {
+            let cs = proj_crs_get_coordinate_system(self.ctx(), self.c_proj);
+            if cs.is_null() {
+                return false;
+            }
+            let mut direction: *const c_char = std::ptr::null();
+            let ok = proj_cs_get_axis_info(
+                self.ctx(),
+                cs,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut direction,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            // `direction` is owned by `cs`; read it (copy) before destroying cs.
+            let northing_first = ok == 1
+                && !direction.is_null()
+                && matches!(
+                    _string(direction).unwrap_or_default().to_ascii_lowercase().as_str(),
+                    "north" | "south"
+                );
+            proj_destroy(cs);
+            northing_first
         }
     }
 
