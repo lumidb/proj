@@ -1155,6 +1155,46 @@ impl Proj {
         }
     }
 
+    /// The unit of this CRS's axis at `index`, as a (conversion factor, name)
+    /// pair. `None` when the CRS has no coordinate system (a CompoundCRS) or
+    /// the axis does not exist. Call on a CRS object, not a `new_known_crs`
+    /// transformation.
+    ///
+    /// The factor's unit depends on the axis type: metres per unit for a linear
+    /// axis, but radians per unit for an angular one, so an axis on a geographic
+    /// CRS reports 0.0174532925199433 and not a ground distance.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn axis_unit(&self, index: i32) -> Option<(f64, String)> {
+        unsafe {
+            let cs = proj_crs_get_coordinate_system(self.ctx(), self.c_proj);
+            if cs.is_null() {
+                return None;
+            }
+            let mut factor: c_double = 0.0;
+            let mut name: *const c_char = std::ptr::null();
+            let ok = proj_cs_get_axis_info(
+                self.ctx(),
+                cs,
+                index,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut factor,
+                &mut name,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            // `name` is owned by `cs`; copy it out before destroying cs.
+            let unit = (ok == 1 && !name.is_null())
+                .then(|| _string(name).ok().map(|n| (factor, n)))
+                .flatten();
+            proj_destroy(cs);
+            unit
+        }
+    }
+
     /// Convert a mutable slice (or anything that can deref into a mutable slice) of `Coord`s
     ///
     /// The following example converts from NAD83 US Survey Feet (EPSG 2230) to NAD83 Metres (EPSG 26946)
@@ -2160,5 +2200,26 @@ mod test {
         assert!(!crs1.equivalent_to(&crs4, ComparisonCriterion::Strict));
         assert!(!crs1.equivalent_to(&crs4, ComparisonCriterion::Equivalent));
         assert!(!crs1.equivalent_to(&crs4, ComparisonCriterion::EquivalentExceptAxisOrder));
+    }
+
+    #[test]
+    fn test_axis_unit() {
+        let (factor, name) = Proj::new("EPSG:2263").unwrap().axis_unit(0).unwrap();
+        assert_eq!(name, "US survey foot");
+        assert_relative_eq!(factor, 0.304800609601219);
+
+        let (factor, name) = Proj::new("EPSG:3067").unwrap().axis_unit(0).unwrap();
+        assert_eq!(name, "metre");
+        assert_relative_eq!(factor, 1.0);
+
+        // An angular axis reports radians per unit, not a ground distance.
+        let (factor, name) = Proj::new("EPSG:4326").unwrap().axis_unit(0).unwrap();
+        assert_eq!(name, "degree");
+        assert_relative_eq!(factor, 0.0174532925199433, epsilon = 1e-15);
+
+        // A CompoundCRS has no coordinate system of its own.
+        assert!(Proj::new("EPSG:2263+6360").unwrap().axis_unit(0).is_none());
+
+        assert!(Proj::new("EPSG:3067").unwrap().axis_unit(7).is_none());
     }
 }
