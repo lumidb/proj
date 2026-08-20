@@ -6,18 +6,19 @@ use proj_sys::{
     PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS,
     PJ_COMPARISON_CRITERION_PJ_COMP_STRICT, PJ_CONTEXT, PJ_COORD, PJ_DIRECTION_PJ_FWD,
     PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LPZT, PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
-    PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI,
-    PJ_WKT_TYPE_PJ_WKT1_GDAL, PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED,
-    PJ_WKT_TYPE_PJ_WKT2_2019, PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts,
-    proj_area_create, proj_area_destroy, proj_area_set_bbox, proj_as_proj_string, proj_as_projjson,
-    proj_as_wkt, proj_context_errno, proj_context_get_url_endpoint,
-    proj_context_is_network_enabled, proj_context_set_search_paths, proj_context_set_url_endpoint,
-    proj_coordinate_metadata_create, proj_coordinate_metadata_get_epoch, proj_create,
-    proj_create_crs_to_crs, proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system,
-    proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy, proj_errno_string,
-    proj_get_area_of_use, proj_get_type, proj_grid_cache_set_enable, proj_info,
-    proj_is_equivalent_to_with_ctx, proj_normalize_for_visualization, proj_pj_info, proj_trans,
-    proj_trans_array, proj_trans_bounds,
+    PJ_TYPE_PJ_TYPE_BOUND_CRS, PJ_TYPE_PJ_TYPE_COMPOUND_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS,
+    PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI, PJ_WKT_TYPE_PJ_WKT1_GDAL,
+    PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED, PJ_WKT_TYPE_PJ_WKT2_2019,
+    PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts, proj_area_create, proj_area_destroy,
+    proj_area_set_bbox, proj_as_proj_string, proj_as_projjson, proj_as_wkt, proj_context_errno,
+    proj_context_get_url_endpoint, proj_context_is_network_enabled, proj_context_set_search_paths,
+    proj_context_set_url_endpoint, proj_coordinate_metadata_create,
+    proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
+    proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system, proj_cs_get_axis_count,
+    proj_cs_get_axis_info, proj_destroy, proj_errno_string, proj_get_area_of_use, proj_get_type,
+    proj_grid_cache_set_enable, proj_info, proj_is_equivalent_to_with_ctx,
+    proj_normalize_for_visualization, proj_pj_info, proj_trans, proj_trans_array,
+    proj_trans_bounds,
 };
 use std::{
     convert, ffi,
@@ -1115,6 +1116,26 @@ impl Proj {
         }
     }
 
+    /// This CRS's coordinate system, or null when it has none: a `CompoundCRS` and a `BoundCRS`
+    /// wrap other CRSes instead of describing axes of their own. The type is checked first because
+    /// PROJ logs an error when asked for the coordinate system of either. The caller owns the
+    /// result and must `proj_destroy` it.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    fn coordinate_system(&self) -> *mut PJconsts {
+        unsafe {
+            if matches!(
+                proj_get_type(self.c_proj),
+                PJ_TYPE_PJ_TYPE_COMPOUND_CRS | PJ_TYPE_PJ_TYPE_BOUND_CRS
+            ) {
+                return std::ptr::null_mut();
+            }
+
+            proj_crs_get_coordinate_system(self.ctx(), self.c_proj)
+        }
+    }
+
     /// True when this CRS's first axis points north/south (latitude/northing
     /// first), e.g. EPSG:4326 or EPSG:3879; false for easting/longitude-first
     /// CRSes and when the axis order can't be determined. Call on a CRS object,
@@ -1124,7 +1145,7 @@ impl Proj {
     /// This method contains unsafe code.
     pub fn axis_order_is_northing_first(&self) -> bool {
         unsafe {
-            let cs = proj_crs_get_coordinate_system(self.ctx(), self.c_proj);
+            let cs = self.coordinate_system();
             if cs.is_null() {
                 return false;
             }
@@ -1165,7 +1186,7 @@ impl Proj {
     /// This method contains unsafe code.
     pub fn axis_count(&self) -> i32 {
         unsafe {
-            let cs = proj_crs_get_coordinate_system(self.ctx(), self.c_proj);
+            let cs = self.coordinate_system();
             if cs.is_null() {
                 return 0;
             }
@@ -1178,8 +1199,8 @@ impl Proj {
     /// The unit of this CRS's axis at `index`, as a (conversion factor, name)
     /// pair. `None` when the CRS has no coordinate system (a CompoundCRS or a
     /// BoundCRS) or the axis does not exist. Ask [`Self::axis_count`] first:
-    /// PROJ logs an error to stderr for an index the CRS does not have. Call on
-    /// a CRS object, not a `new_known_crs` transformation.
+    /// PROJ logs an error for an index the CRS does not have. Call on a CRS
+    /// object, not a `new_known_crs` transformation.
     ///
     /// The factor's unit depends on the axis type: metres per unit for a linear
     /// axis, but radians per unit for an angular one, so an axis on a geographic
@@ -1189,7 +1210,7 @@ impl Proj {
     /// This method contains unsafe code.
     pub fn axis_unit(&self, index: i32) -> Option<(f64, String)> {
         unsafe {
-            let cs = proj_crs_get_coordinate_system(self.ctx(), self.c_proj);
+            let cs = self.coordinate_system();
             if cs.is_null() {
                 return None;
             }
