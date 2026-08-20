@@ -256,9 +256,12 @@ extern crate approx;
 
 mod context;
 mod cstring_array;
+mod log;
 mod proj;
 mod transform;
 pub use transform::{Transform, TransformError};
+
+pub use crate::log::{LogLevel, set_log_handler};
 
 pub use crate::proj::Area;
 pub use crate::proj::Coord;
