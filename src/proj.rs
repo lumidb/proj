@@ -14,11 +14,11 @@ use proj_sys::{
     proj_context_get_url_endpoint, proj_context_is_network_enabled, proj_context_set_search_paths,
     proj_context_set_url_endpoint, proj_coordinate_metadata_create,
     proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
-    proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system, proj_cs_get_axis_count,
-    proj_cs_get_axis_info, proj_destroy, proj_errno_string, proj_get_area_of_use, proj_get_type,
-    proj_grid_cache_set_enable, proj_info, proj_is_equivalent_to_with_ctx,
-    proj_normalize_for_visualization, proj_pj_info, proj_trans, proj_trans_array,
-    proj_trans_bounds,
+    proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system, proj_crs_promote_to_3D,
+    proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy, proj_errno_string,
+    proj_get_area_of_use, proj_get_type, proj_grid_cache_set_enable, proj_info,
+    proj_is_equivalent_to_with_ctx, proj_normalize_for_visualization, proj_pj_info, proj_trans,
+    proj_trans_array, proj_trans_bounds,
 };
 use std::{
     convert, ffi,
@@ -1237,6 +1237,33 @@ impl Proj {
         }
     }
 
+    /// This CRS with an ellipsoidal height axis in metres added. Call on a CRS object, not a
+    /// `new_known_crs` transformation.
+    ///
+    /// PROJ promotes a 2D CRS by itself when the other side of a transformation is a geographic
+    /// 3D or a geocentric CRS. It does not when the other side is a CompoundCRS, and hands the
+    /// height back untouched instead; promote explicitly to have it transformed there too.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn promote_to_3d(&self) -> Result<Proj, ProjCreateError> {
+        // Clone the context so the promoted CRS owns a distinct one rather than continuing to
+        // share the source's context.
+        let ctx = self.ctx.clone_owned();
+        let ctx_ptr = ctx.as_ptr();
+
+        let ptr = result_from_create(ctx_ptr, unsafe {
+            proj_crs_promote_to_3D(ctx_ptr, std::ptr::null(), self.c_proj)
+        })
+        .map_err(|e| ProjCreateError::ProjError(e.message(ctx_ptr)))?;
+
+        Ok(Proj {
+            c_proj: ptr,
+            ctx,
+            area: None,
+        })
+    }
+
     /// Convert a mutable slice (or anything that can deref into a mutable slice) of `Coord`s
     ///
     /// The following example converts from NAD83 US Survey Feet (EPSG 2230) to NAD83 Metres (EPSG 26946)
@@ -2278,5 +2305,24 @@ mod test {
                 .axis_count(),
             0
         );
+    }
+
+    #[test]
+    fn test_promote_to_3d() {
+        let promoted = Proj::new("EPSG:2263").unwrap().promote_to_3d().unwrap();
+        assert_eq!(promoted.axis_count(), 3);
+
+        // The height PROJ adds is metres, whatever the horizontal unit.
+        assert_eq!(promoted.axis_unit(0).unwrap().1, "US survey foot");
+        assert_eq!(promoted.axis_unit(2).unwrap().1, "metre");
+
+        // A CRS that already has a height comes back as it was, a CompoundCRS included.
+        let already = Proj::new("EPSG:4979").unwrap().promote_to_3d().unwrap();
+        assert_eq!(already.axis_count(), 3);
+        let compound = Proj::new("EPSG:2263+6360")
+            .unwrap()
+            .promote_to_3d()
+            .unwrap();
+        assert_eq!(compound.axis_count(), 0);
     }
 }
