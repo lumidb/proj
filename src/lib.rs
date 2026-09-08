@@ -264,6 +264,7 @@ pub use transform::{Transform, TransformError};
 pub use crate::log::{LogLevel, set_log_handler};
 
 pub use crate::proj::Area;
+pub use crate::proj::ComparisonCriterion;
 pub use crate::proj::Coord;
 pub use crate::proj::Info;
 pub use crate::proj::Proj;
