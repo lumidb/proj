@@ -399,11 +399,32 @@ impl ProjBuilder {
     /// # Safety
     /// This method contains unsafe code.
     pub fn set_search_paths<P: AsRef<Path>>(&mut self, newpath: P) -> Result<(), ProjError> {
+        self.add_search_path(newpath, false)
+    }
+
+    /// Add a resource file search path before existing entries, giving its resources precedence.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn prepend_search_path<P: AsRef<Path>>(&mut self, newpath: P) -> Result<(), ProjError> {
+        self.add_search_path(newpath, true)
+    }
+
+    fn add_search_path<P: AsRef<Path>>(
+        &mut self,
+        newpath: P,
+        prepend: bool,
+    ) -> Result<(), ProjError> {
         let existing = self.lib_info()?.searchpath;
         let pathsep = if cfg!(windows) { ";" } else { ":" };
         let mut individual: Vec<&str> = existing.split(pathsep).collect();
         let np = Path::new(newpath.as_ref());
-        individual.push(np.to_str().ok_or(ProjError::Path)?);
+        let np = np.to_str().ok_or(ProjError::Path)?;
+        if prepend {
+            individual.insert(0, np);
+        } else {
+            individual.push(np);
+        }
         let newlength = individual.len() as i32;
         // convert path entries to CString
         let paths_c = individual
@@ -1981,6 +2002,24 @@ mod test {
         let pathsep = if cfg!(windows) { ";" } else { ":" };
         let individual: Vec<&str> = ipath.split(pathsep).collect();
         assert_eq!(&individual.last().unwrap(), &&"/foo")
+    }
+
+    #[test]
+    fn prepended_search_path_takes_precedence() {
+        let dir = std::env::temp_dir().join(format!("proj-search-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("world"),
+            "<lumidb> +proj=longlat +datum=WGS84 +no_defs <>\n",
+        )
+        .unwrap();
+
+        let mut builder = ProjBuilder::new();
+        builder.prepend_search_path(&dir).unwrap();
+        let proj = builder.proj("+init=world:lumidb");
+        std::fs::remove_dir_all(dir).unwrap();
+
+        assert!(proj.is_ok(), "{proj:?}");
     }
     #[test]
     fn test_set_endpoint() {
