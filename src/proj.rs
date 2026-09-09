@@ -6,24 +6,26 @@ use proj_sys::{
     PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS,
     PJ_COMPARISON_CRITERION_PJ_COMP_STRICT, PJ_CONTEXT, PJ_COORD, PJ_DIRECTION_PJ_FWD,
     PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LPZT, PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
-    PJ_TYPE_PJ_TYPE_BOUND_CRS, PJ_TYPE_PJ_TYPE_COMPOUND_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS,
-    PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI, PJ_WKT_TYPE_PJ_WKT1_GDAL,
-    PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED, PJ_WKT_TYPE_PJ_WKT2_2019,
-    PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts, proj_area_create, proj_area_destroy,
-    proj_area_set_bbox, proj_as_proj_string, proj_as_projjson, proj_as_wkt, proj_context_errno,
-    proj_context_get_url_endpoint, proj_context_is_network_enabled, proj_context_set_search_paths,
-    proj_context_set_url_endpoint, proj_coordinate_metadata_create,
-    proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
-    proj_create_crs_to_crs_from_pj, proj_crs_get_coordinate_system, proj_crs_promote_to_3D,
-    proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy, proj_errno_string,
-    proj_get_area_of_use, proj_get_type, proj_grid_cache_set_enable, proj_info,
-    proj_is_equivalent_to_with_ctx, proj_normalize_for_visualization, proj_pj_info, proj_trans,
-    proj_trans_array, proj_trans_bounds,
+    PJ_TYPE_PJ_TYPE_BOUND_CRS, PJ_TYPE_PJ_TYPE_COMPOUND_CRS, PJ_TYPE_PJ_TYPE_CRS,
+    PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI,
+    PJ_WKT_TYPE_PJ_WKT1_GDAL, PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED,
+    PJ_WKT_TYPE_PJ_WKT2_2019, PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts,
+    proj_area_create, proj_area_destroy, proj_area_set_bbox, proj_as_proj_string, proj_as_projjson,
+    proj_as_wkt, proj_context_errno, proj_context_get_url_endpoint,
+    proj_context_is_network_enabled, proj_context_set_search_paths, proj_context_set_url_endpoint,
+    proj_coordinate_metadata_create, proj_coordinate_metadata_get_epoch, proj_create,
+    proj_create_crs_to_crs, proj_create_crs_to_crs_from_pj, proj_create_from_name,
+    proj_crs_get_coordinate_system, proj_crs_promote_to_3D, proj_cs_get_axis_count,
+    proj_cs_get_axis_info, proj_destroy, proj_errno_string, proj_get_area_of_use,
+    proj_get_id_auth_name, proj_get_id_code, proj_get_name, proj_get_type,
+    proj_grid_cache_set_enable, proj_info, proj_is_deprecated, proj_is_equivalent_to_with_ctx,
+    proj_list_destroy, proj_list_get, proj_list_get_count, proj_normalize_for_visualization,
+    proj_pj_info, proj_trans, proj_trans_array, proj_trans_bounds,
 };
 use std::{
     convert, ffi,
     fmt::{self, Debug},
-    str,
+    ptr, str,
 };
 
 use crate::context::{Context, ProjContext};
@@ -160,6 +162,15 @@ pub enum ProjCreateError {
     MetadataObjectCreation,
 }
 
+/// A coordinate reference system found in the PROJ database.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrsSearchResult {
+    pub authority: String,
+    pub code: String,
+    pub name: String,
+    pub deprecated: bool,
+}
+
 #[derive(Debug)]
 pub enum ComparisonCriterion {
     Strict,
@@ -201,6 +212,18 @@ pub(crate) unsafe fn _string(raw_ptr: *const c_char) -> Result<String, str::Utf8
         let c_str = CStr::from_ptr(raw_ptr);
         Ok(str::from_utf8(c_str.to_bytes())?.to_string())
     }
+}
+
+fn required_string(raw_ptr: *const c_char, field: &str) -> Result<String, ProjCreateError> {
+    if raw_ptr.is_null() {
+        return Err(ProjCreateError::ProjError(format!(
+            "PROJ returned a CRS without a {field}"
+        )));
+    }
+
+    unsafe { _string(raw_ptr) }.map_err(|error| {
+        ProjCreateError::ProjError(format!("PROJ returned an invalid CRS {field}: {error}"))
+    })
 }
 
 /// Look up an error message using the error code
@@ -608,6 +631,73 @@ pub struct Proj {
 // `unsafe impl Send`/`Sync`: create a separate `Proj` per thread instead (as pyproj does).
 
 impl Proj {
+    /// Search coordinate reference system names and aliases in the PROJ database.
+    ///
+    /// The search is case-insensitive and matches partial names. `authority` restricts results to
+    /// an authority such as `"EPSG"`; `None` searches all authorities. A limit of zero is unlimited.
+    pub fn search_crs(
+        name: &str,
+        authority: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<CrsSearchResult>, ProjCreateError> {
+        let name = CString::new(name).map_err(ProjCreateError::ArgumentNulError)?;
+        let authority = authority
+            .map(CString::new)
+            .transpose()
+            .map_err(ProjCreateError::ArgumentNulError)?;
+        let context = Context::new();
+        let ctx = context.as_ptr();
+        let types = [PJ_TYPE_PJ_TYPE_CRS];
+        let list = result_from_create(ctx, unsafe {
+            proj_create_from_name(
+                ctx,
+                authority
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+                name.as_ptr(),
+                types.as_ptr(),
+                types.len(),
+                1,
+                limit,
+                ptr::null(),
+            )
+        })
+        .map_err(|error| ProjCreateError::ProjError(error.message(ctx)))?;
+
+        let result = (|| {
+            let count = unsafe { proj_list_get_count(list) };
+            if count < 0 {
+                return Err(ProjCreateError::ProjError(
+                    "PROJ returned an invalid CRS search result count".to_owned(),
+                ));
+            }
+
+            let mut results = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                let object = result_from_create(ctx, unsafe { proj_list_get(ctx, list, index) })
+                    .map_err(|error| ProjCreateError::ProjError(error.message(ctx)))?;
+
+                let result = (|| {
+                    Ok(CrsSearchResult {
+                        authority: required_string(
+                            unsafe { proj_get_id_auth_name(object, 0) },
+                            "authority",
+                        )?,
+                        code: required_string(unsafe { proj_get_id_code(object, 0) }, "code")?,
+                        name: required_string(unsafe { proj_get_name(object) }, "name")?,
+                        deprecated: unsafe { proj_is_deprecated(object) != 0 },
+                    })
+                })();
+                unsafe { proj_destroy(object) };
+                results.push(result?);
+            }
+            Ok(results)
+        })();
+
+        unsafe { proj_list_destroy(list) };
+        result
+    }
+
     /// Create a coordinate metadata object to be used in coordinate operations.
     ///
     /// This creates a coordinate metadata object that can be used in coordinate operations,
@@ -2282,6 +2372,25 @@ mod test {
         assert_eq!(
             wkt,
             r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],USAGE[SCOPE["Horizontal component of 3D system."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",4326]]"#
+        );
+    }
+
+    #[test]
+    fn test_search_crs_finds_names_and_aliases() {
+        let names = Proj::search_crs("TM35FIN", Some("EPSG"), 20).unwrap();
+        assert!(
+            names.iter().any(|result| {
+                result.authority == "EPSG"
+                    && result.code == "3067"
+                    && result.name.contains("TM35FIN")
+            }),
+            "got {names:?}"
+        );
+
+        let aliases = Proj::search_crs("YKJ", Some("EPSG"), 20).unwrap();
+        assert!(
+            aliases.iter().any(|result| result.code == "2393"),
+            "got {aliases:?}"
         );
     }
 
