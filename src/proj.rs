@@ -17,10 +17,11 @@ use proj_sys::{
     proj_create_crs_to_crs, proj_create_crs_to_crs_from_pj, proj_create_from_name,
     proj_crs_get_coordinate_system, proj_crs_promote_to_3D, proj_cs_get_axis_count,
     proj_cs_get_axis_info, proj_destroy, proj_errno_string, proj_get_area_of_use,
-    proj_get_id_auth_name, proj_get_id_code, proj_get_name, proj_get_type,
-    proj_grid_cache_set_enable, proj_info, proj_is_deprecated, proj_is_equivalent_to_with_ctx,
-    proj_list_destroy, proj_list_get, proj_list_get_count, proj_normalize_for_visualization,
-    proj_pj_info, proj_trans, proj_trans_array, proj_trans_bounds,
+    proj_get_codes_from_database, proj_get_id_auth_name, proj_get_id_code, proj_get_name,
+    proj_get_type, proj_grid_cache_set_enable, proj_info, proj_is_deprecated,
+    proj_is_equivalent_to_with_ctx, proj_list_destroy, proj_list_get, proj_list_get_count,
+    proj_normalize_for_visualization, proj_pj_info, proj_string_list_destroy, proj_trans,
+    proj_trans_array, proj_trans_bounds,
 };
 use std::{
     convert, ffi,
@@ -631,6 +632,41 @@ pub struct Proj {
 // `unsafe impl Send`/`Sync`: create a separate `Proj` per thread instead (as pyproj does).
 
 impl Proj {
+    /// List non-deprecated EPSG coordinate reference system codes.
+    pub fn epsg_crs_codes() -> Result<Vec<u16>, ProjCreateError> {
+        let context = Context::new();
+        let ctx = context.as_ptr();
+        let list = result_from_create(ctx, unsafe {
+            proj_get_codes_from_database(ctx, c"EPSG".as_ptr(), PJ_TYPE_PJ_TYPE_CRS, 0)
+        })
+        .map_err(|error| ProjCreateError::ProjError(error.message(ctx)))?;
+
+        let result = (|| {
+            let mut codes = Vec::new();
+            let mut index = 0;
+            loop {
+                let code = unsafe { *list.add(index) };
+                if code.is_null() {
+                    break;
+                }
+                codes.push(
+                    required_string(code, "code")?
+                        .parse::<u16>()
+                        .map_err(|error| {
+                            ProjCreateError::ProjError(format!(
+                                "PROJ returned an invalid EPSG CRS code: {error}"
+                            ))
+                        })?,
+                );
+                index += 1;
+            }
+            Ok(codes)
+        })();
+
+        unsafe { proj_string_list_destroy(list) };
+        result
+    }
+
     /// Search coordinate reference system names and aliases in the PROJ database.
     ///
     /// The search is case-insensitive and matches partial names. `authority` restricts results to
@@ -2373,6 +2409,13 @@ mod test {
             wkt,
             r#"GEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],MEMBER["World Geodetic System 1984 (G2296)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",east,ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],USAGE[SCOPE["Horizontal component of 3D system."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",4326]]"#
         );
+    }
+
+    #[test]
+    fn test_epsg_crs_codes_lists_current_codes() {
+        let codes = Proj::epsg_crs_codes().unwrap();
+        assert!(codes.contains(&3857));
+        assert!(!codes.contains(&4001));
     }
 
     #[test]
