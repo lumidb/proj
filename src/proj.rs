@@ -5,23 +5,30 @@ use proj_sys::{
     PJ_AREA, PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT,
     PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS,
     PJ_COMPARISON_CRITERION_PJ_COMP_STRICT, PJ_CONTEXT, PJ_COORD, PJ_DIRECTION_PJ_FWD,
-    PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LPZT, PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
+    PJ_DIRECTION_PJ_INV, PJ_INFO, PJ_LOG_LEVEL_PJ_LOG_NONE, PJ_LPZT, PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
     PJ_TYPE_PJ_TYPE_BOUND_CRS, PJ_TYPE_PJ_TYPE_COMPOUND_CRS, PJ_TYPE_PJ_TYPE_CRS,
     PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI,
     PJ_WKT_TYPE_PJ_WKT1_GDAL, PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED,
     PJ_WKT_TYPE_PJ_WKT2_2019, PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts,
-    proj_area_create, proj_area_destroy, proj_area_set_bbox, proj_as_proj_string, proj_as_projjson,
-    proj_as_wkt, proj_context_errno, proj_context_get_url_endpoint,
-    proj_context_is_network_enabled, proj_context_set_search_paths, proj_context_set_url_endpoint,
-    proj_coordinate_metadata_create, proj_coordinate_metadata_get_epoch, proj_create,
-    proj_create_crs_to_crs, proj_create_crs_to_crs_from_pj, proj_create_from_name,
-    proj_crs_get_coordinate_system, proj_crs_promote_to_3D, proj_cs_get_axis_count,
-    proj_cs_get_axis_info, proj_destroy, proj_errno_string, proj_get_area_of_use,
-    proj_get_codes_from_database, proj_get_id_auth_name, proj_get_id_code, proj_get_name,
-    proj_get_type, proj_grid_cache_set_enable, proj_info, proj_is_deprecated,
+    PROJ_GRID_AVAILABILITY_USE_PROJ_GRID_AVAILABILITY_DISCARD_OPERATION_IF_MISSING_GRID,
+    PROJ_SPATIAL_CRITERION_PROJ_SPATIAL_CRITERION_PARTIAL_INTERSECTION, proj_area_create,
+    proj_area_destroy, proj_area_set_bbox, proj_as_proj_string, proj_as_projjson, proj_as_wkt,
+    proj_clone, proj_context_errno, proj_context_get_url_endpoint, proj_context_is_network_enabled,
+    proj_context_set_search_paths, proj_context_set_url_endpoint, proj_coordinate_metadata_create,
+    proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
+    proj_create_crs_to_crs_from_pj, proj_create_from_name, proj_create_operation_factory_context,
+    proj_create_operations, proj_crs_create_bound_crs, proj_crs_get_coordinate_system,
+    proj_crs_get_geodetic_crs, proj_crs_get_sub_crs, proj_crs_promote_to_3D,
+    proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy, proj_errno_string,
+    proj_get_area_of_use, proj_get_codes_from_database, proj_get_id_auth_name, proj_get_id_code,
+    proj_get_name, proj_get_type, proj_grid_cache_set_enable, proj_info, proj_is_deprecated,
     proj_is_equivalent_to_with_ctx, proj_list_destroy, proj_list_get, proj_list_get_count,
-    proj_normalize_for_visualization, proj_pj_info, proj_string_list_destroy, proj_trans,
-    proj_trans_array, proj_trans_bounds,
+    proj_log_level, proj_normalize_for_visualization, proj_operation_factory_context_destroy,
+    proj_operation_factory_context_set_allow_ballpark_transformations,
+    proj_operation_factory_context_set_area_of_interest,
+    proj_operation_factory_context_set_grid_availability_use,
+    proj_operation_factory_context_set_spatial_criterion, proj_pj_info, proj_string_list_destroy,
+    proj_trans, proj_trans_array, proj_trans_bounds,
 };
 use std::{
     convert, ffi,
@@ -1246,6 +1253,105 @@ impl Proj {
                 return Err(ProjError::Conversion("no proj4 representation".into()));
             }
             Ok(_string(s)?)
+        }
+    }
+
+    /// This CRS as a PROJ.4 string carrying its datum shift to WGS 84 as `+nadgrids` or
+    /// `+towgs84`, for consumers such as proj4js that apply no shift they are not told of. The
+    /// shift is the first, so best, of the operations PROJ finds within `area` that can be
+    /// written that way, using only grids it can open. `None` when the CRS is already on WGS 84,
+    /// is already bound, or has no such shift. Call on a CRS object, not a `new_known_crs`
+    /// transformation.
+    ///
+    /// # Safety
+    /// This method contains unsafe code.
+    pub fn as_proj_string_bound_to_wgs84(
+        &self,
+        area: Option<Area>,
+    ) -> Result<Option<String>, ProjError> {
+        let ctx = self.ctx();
+        unsafe {
+            let crs_type = proj_get_type(self.c_proj);
+            if crs_type == PJ_TYPE_PJ_TYPE_BOUND_CRS {
+                return Ok(None);
+            }
+
+            // Most candidates cannot be written as a PROJ.4 string, and PROJ logs each refusal.
+            let log_level = proj_log_level(ctx, PJ_LOG_LEVEL_PJ_LOG_NONE);
+
+            let horizontal = if crs_type == PJ_TYPE_PJ_TYPE_COMPOUND_CRS {
+                proj_crs_get_sub_crs(ctx, self.c_proj, 0)
+            } else {
+                proj_clone(ctx, self.c_proj)
+            };
+            let geodetic = proj_crs_get_geodetic_crs(ctx, horizontal);
+            let wgs84 = proj_create(ctx, c"EPSG:4326".as_ptr());
+            let factory = proj_create_operation_factory_context(ctx, ptr::null());
+
+            let mut bound = None;
+            if !geodetic.is_null()
+                && !wgs84.is_null()
+                && !factory.is_null()
+                && proj_is_equivalent_to_with_ctx(
+                    ctx,
+                    geodetic,
+                    wgs84,
+                    PJ_COMPARISON_CRITERION_PJ_COMP_EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS,
+                ) == 0
+            {
+                if let Some(area) = area {
+                    proj_operation_factory_context_set_area_of_interest(
+                        ctx, factory, area.west, area.south, area.east, area.north,
+                    );
+                }
+                proj_operation_factory_context_set_spatial_criterion(
+                    ctx,
+                    factory,
+                    PROJ_SPATIAL_CRITERION_PROJ_SPATIAL_CRITERION_PARTIAL_INTERSECTION,
+                );
+                proj_operation_factory_context_set_grid_availability_use(
+                    ctx,
+                    factory,
+                    PROJ_GRID_AVAILABILITY_USE_PROJ_GRID_AVAILABILITY_DISCARD_OPERATION_IF_MISSING_GRID,
+                );
+                proj_operation_factory_context_set_allow_ballpark_transformations(ctx, factory, 0);
+
+                let operations = proj_create_operations(ctx, geodetic, wgs84, factory);
+                let count = if operations.is_null() {
+                    0
+                } else {
+                    proj_list_get_count(operations)
+                };
+                for index in 0..count {
+                    let operation = proj_list_get(ctx, operations, index);
+                    let crs = proj_crs_create_bound_crs(ctx, horizontal, wgs84, operation);
+                    if !crs.is_null() {
+                        let s = proj_as_proj_string(
+                            ctx,
+                            crs,
+                            PJ_PROJ_STRING_TYPE_PJ_PROJ_4,
+                            ptr::null(),
+                        );
+                        if !s.is_null() {
+                            bound = Some(_string(s));
+                        }
+                    }
+                    proj_destroy(crs);
+                    proj_destroy(operation);
+                    if bound.is_some() {
+                        break;
+                    }
+                }
+                proj_list_destroy(operations);
+            }
+
+            proj_operation_factory_context_destroy(factory);
+            proj_destroy(wgs84);
+            proj_destroy(geodetic);
+            proj_destroy(horizontal);
+            proj_log_level(ctx, log_level);
+
+            Ok(bound.transpose()?)
         }
     }
 
