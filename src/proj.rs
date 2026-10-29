@@ -10,23 +10,22 @@ use proj_sys::{
     PJ_TYPE_PJ_TYPE_GEOGRAPHIC_2D_CRS, PJ_TYPE_PJ_TYPE_GEOGRAPHIC_3D_CRS, PJ_WKT_TYPE_PJ_WKT1_ESRI,
     PJ_WKT_TYPE_PJ_WKT1_GDAL, PJ_WKT_TYPE_PJ_WKT2_2015, PJ_WKT_TYPE_PJ_WKT2_2015_SIMPLIFIED,
     PJ_WKT_TYPE_PJ_WKT2_2019, PJ_WKT_TYPE_PJ_WKT2_2019_SIMPLIFIED, PJ_XYZT, PJconsts,
-    PROJ_GRID_AVAILABILITY_USE_PROJ_GRID_AVAILABILITY_DISCARD_OPERATION_IF_MISSING_GRID,
     PROJ_SPATIAL_CRITERION_PROJ_SPATIAL_CRITERION_PARTIAL_INTERSECTION, proj_area_create,
     proj_area_destroy, proj_area_set_bbox, proj_as_proj_string, proj_as_projjson, proj_as_wkt,
     proj_clone, proj_context_errno, proj_context_get_url_endpoint, proj_context_is_network_enabled,
     proj_context_set_search_paths, proj_context_set_url_endpoint, proj_coordinate_metadata_create,
-    proj_coordinate_metadata_get_epoch, proj_create, proj_create_crs_to_crs,
-    proj_create_crs_to_crs_from_pj, proj_create_from_name, proj_create_operation_factory_context,
-    proj_create_operations, proj_crs_create_bound_crs, proj_crs_get_coordinate_system,
-    proj_crs_get_geodetic_crs, proj_crs_get_sub_crs, proj_crs_promote_to_3D,
-    proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy, proj_errno_string,
-    proj_get_area_of_use, proj_get_codes_from_database, proj_get_id_auth_name, proj_get_id_code,
-    proj_get_name, proj_get_type, proj_grid_cache_set_enable, proj_info, proj_is_deprecated,
-    proj_is_equivalent_to_with_ctx, proj_list_destroy, proj_list_get, proj_list_get_count,
-    proj_log_level, proj_normalize_for_visualization, proj_operation_factory_context_destroy,
+    proj_coordinate_metadata_get_epoch, proj_coordoperation_get_grid_used_count, proj_create,
+    proj_create_crs_to_crs, proj_create_crs_to_crs_from_pj, proj_create_from_name,
+    proj_create_operation_factory_context, proj_create_operations, proj_crs_create_bound_crs,
+    proj_crs_get_coordinate_system, proj_crs_get_geodetic_crs, proj_crs_get_sub_crs,
+    proj_crs_promote_to_3D, proj_cs_get_axis_count, proj_cs_get_axis_info, proj_destroy,
+    proj_errno_string, proj_get_area_of_use, proj_get_codes_from_database, proj_get_id_auth_name,
+    proj_get_id_code, proj_get_name, proj_get_type, proj_grid_cache_set_enable, proj_info,
+    proj_is_deprecated, proj_is_equivalent_to_with_ctx, proj_list_destroy, proj_list_get,
+    proj_list_get_count, proj_log_level, proj_normalize_for_visualization,
+    proj_operation_factory_context_destroy,
     proj_operation_factory_context_set_allow_ballpark_transformations,
     proj_operation_factory_context_set_area_of_interest,
-    proj_operation_factory_context_set_grid_availability_use,
     proj_operation_factory_context_set_spatial_criterion, proj_pj_info, proj_string_list_destroy,
     proj_trans, proj_trans_array, proj_trans_bounds,
 };
@@ -1256,12 +1255,12 @@ impl Proj {
         }
     }
 
-    /// This CRS as a PROJ.4 string carrying its datum shift to WGS 84 as `+nadgrids` or
-    /// `+towgs84`, for consumers such as proj4js that apply no shift they are not told of. The
-    /// shift is the first, so best, of the operations PROJ finds within `area` that can be
-    /// written that way, using only grids it can open. `None` when the CRS is already on WGS 84,
-    /// is already bound, or has no such shift. Call on a CRS object, not a `new_known_crs`
-    /// transformation.
+    /// This CRS as a PROJ.4 string carrying its datum shift to WGS 84 as `+towgs84`, for
+    /// consumers such as proj4js that apply no shift they are not told of. The shift is the
+    /// first, so best, of the operations PROJ finds within `area` that need no grid and can be
+    /// written that way, i.e. a published Helmert transformation. `None` when the CRS is already
+    /// on WGS 84, is already bound, or has no such shift. Call on a CRS object, not a
+    /// `new_known_crs` transformation.
     ///
     /// # Safety
     /// This method contains unsafe code.
@@ -1309,11 +1308,6 @@ impl Proj {
                     factory,
                     PROJ_SPATIAL_CRITERION_PROJ_SPATIAL_CRITERION_PARTIAL_INTERSECTION,
                 );
-                proj_operation_factory_context_set_grid_availability_use(
-                    ctx,
-                    factory,
-                    PROJ_GRID_AVAILABILITY_USE_PROJ_GRID_AVAILABILITY_DISCARD_OPERATION_IF_MISSING_GRID,
-                );
                 proj_operation_factory_context_set_allow_ballpark_transformations(ctx, factory, 0);
 
                 let operations = proj_create_operations(ctx, geodetic, wgs84, factory);
@@ -1324,7 +1318,11 @@ impl Proj {
                 };
                 for index in 0..count {
                     let operation = proj_list_get(ctx, operations, index);
-                    let crs = proj_crs_create_bound_crs(ctx, horizontal, wgs84, operation);
+                    let crs = if proj_coordoperation_get_grid_used_count(ctx, operation) == 0 {
+                        proj_crs_create_bound_crs(ctx, horizontal, wgs84, operation)
+                    } else {
+                        ptr::null_mut()
+                    };
                     if !crs.is_null() {
                         let s = proj_as_proj_string(
                             ctx,
