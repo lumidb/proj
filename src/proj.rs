@@ -638,12 +638,13 @@ pub struct Proj {
 // `unsafe impl Send`/`Sync`: create a separate `Proj` per thread instead (as pyproj does).
 
 impl Proj {
-    /// List non-deprecated EPSG coordinate reference system codes.
-    pub fn epsg_crs_codes() -> Result<Vec<u16>, ProjCreateError> {
+    /// List non-deprecated coordinate reference system codes for an authority.
+    pub fn crs_codes(authority: &str) -> Result<Vec<String>, ProjCreateError> {
+        let authority = CString::new(authority).map_err(ProjCreateError::ArgumentNulError)?;
         let context = Context::new();
         let ctx = context.as_ptr();
         let list = result_from_create(ctx, unsafe {
-            proj_get_codes_from_database(ctx, c"EPSG".as_ptr(), PJ_TYPE_PJ_TYPE_CRS, 0)
+            proj_get_codes_from_database(ctx, authority.as_ptr(), PJ_TYPE_PJ_TYPE_CRS, 0)
         })
         .map_err(|error| ProjCreateError::ProjError(error.message(ctx)))?;
 
@@ -655,15 +656,7 @@ impl Proj {
                 if code.is_null() {
                     break;
                 }
-                codes.push(
-                    required_string(code, "code")?
-                        .parse::<u16>()
-                        .map_err(|error| {
-                            ProjCreateError::ProjError(format!(
-                                "PROJ returned an invalid EPSG CRS code: {error}"
-                            ))
-                        })?,
-                );
+                codes.push(required_string(code, "code")?);
                 index += 1;
             }
             Ok(codes)
@@ -2516,10 +2509,20 @@ mod test {
     }
 
     #[test]
-    fn test_epsg_crs_codes_lists_current_codes() {
-        let codes = Proj::epsg_crs_codes().unwrap();
-        assert!(codes.contains(&3857));
-        assert!(!codes.contains(&4001));
+    fn test_crs_codes_lists_current_codes() {
+        let codes = Proj::crs_codes("EPSG").unwrap();
+        assert!(codes.iter().any(|code| code == "3857"));
+        assert!(!codes.iter().any(|code| code == "4001"));
+
+        let codes = Proj::crs_codes("ESRI").unwrap();
+        assert!(codes.iter().any(|code| code == "103704"));
+
+        let codes = Proj::crs_codes("IGNF").unwrap();
+        assert!(codes.iter().any(|code| code == "LAMB93"));
+        assert!(matches!(
+            Proj::crs_codes("EPSG\0"),
+            Err(ProjCreateError::ArgumentNulError(_))
+        ));
     }
 
     #[test]
